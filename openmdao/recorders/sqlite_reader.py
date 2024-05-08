@@ -4,8 +4,10 @@ Definition of the SqliteCaseReader.
 import sqlite3
 from collections import OrderedDict
 
+import re
 import sys
 import numpy as np
+import pandas as pd
 
 from openmdao.recorders.base_case_reader import BaseCaseReader
 from openmdao.recorders.case import Case
@@ -848,7 +850,7 @@ class SqliteCaseReader(BaseCaseReader):
 
         return cases
 
-    def get_cases(self, source=None, recurse=True, flat=True):
+    def get_cases(self, source=None, recurse=True, flat=True, as_=None):
         """
         Iterate over the cases.
 
@@ -867,11 +869,55 @@ class SqliteCaseReader(BaseCaseReader):
         list or dict
             The cases identified by source.
         """
+        if flat is False and as_ is not None:
+            raise RuntimeError("Using `flat` and `as_` keywords is not supported.")
+
         case_ids = self.list_cases(source, recurse, flat, out_stream=None)
-        if isinstance(case_ids, list):
-            return [self.get_case(case_id) for case_id in case_ids]
-        else:
-            return self._get_cases_nested(case_ids, OrderedDict())
+
+        if isinstance(case_ids, list) and as_ is None:
+            as_ = 'list'
+
+        elif not isinstance(case_ids, list) and as_ is None:
+            as_ = 'dict'
+
+        if as_ == 'list':
+            cases = [self.get_case(case_id) for case_id in case_ids]
+        elif as_ == 'dict':
+            cases = self._get_cases_nested(case_ids, OrderedDict())
+        elif as_ == 'dataframe':
+            if source not in ('problem', 'driver'):
+                raise RuntimeError('Getting cases for systems and solvers as a dataframe is not supported')
+
+            iterations = []
+
+            for case_id in case_ids:
+                process, source, iteration = re.split('[:|]', case_id)
+
+                iteration = {
+                    "process": process,
+                    "source": source,
+                    "iteration": int(iteration)
+                }
+
+                for key, value in self.get_case(case_id).get_design_vars().items():
+                    key = f"design_var.{key}"
+
+                    iteration[key] = value
+
+                for key, value in self.get_case(case_id).get_objectives().items():
+                    key = f"objective.{key}"
+
+                    iteration[key] = value
+
+                for key, value in self.get_case(case_id).get_constraints().items():
+                    key = f"constraint.{key}"
+                    iteration[key] = value
+
+                iterations.append(iteration)
+
+            iterations = pd.DataFrame.from_records(iterations)
+
+            return iterations
 
     def _get_cases_nested(self, case_ids, cases):
         """
